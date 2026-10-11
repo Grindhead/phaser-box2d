@@ -1,3 +1,4 @@
+import { worldStepState } from './world-step-state.js';
 /**
  * This file includes code that is:
  * 
@@ -415,6 +416,7 @@ export function b2CreateWorld(def /* b2WorldDef */)
  */
 export function b2DestroyWorld(worldId)
 {
+    worldStepState.delete(worldId.index1);
     let world = b2GetWorldFromId(worldId);
 
     b2DestroyBitSet(world.debugBodySet);

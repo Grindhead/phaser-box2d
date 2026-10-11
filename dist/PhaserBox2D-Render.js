@@ -1,7 +1,7 @@
 /**
  * @license
  * Phaser Box2D v1.1.0
- * Wednesday 1 January 2025 at 15:57
+ * Sunday, 11 October 2026 at 20:03
  * 
  * This library includes code that is ported from the original C version. The original C code is Copyright 2023 Erin Catto
  * and was released under the MIT license. The JavaScript port of the C code along with all additional code is
@@ -456,7 +456,7 @@ function b2GetLengthUnitsPerMeter() {
 function b2SetAssertFcn(assertFcn) {
 }
 function b2GetVersion() {
-  return new b2Version(3, 0, 0);
+  return new b2Version(3, 1, 0);
 }
 
 // src/include/core_h.js
@@ -529,6 +529,9 @@ function B2_IS_NON_NULL(id) {
 function B2_ID_EQUALS(id1, id2) {
   return id1.index1 === id2.index1 && id1.world0 === id2.world0 && id1.revision === id2.revision;
 }
+
+// src/world-step-state.js
+var worldStepState = /* @__PURE__ */ new Map();
 
 // src/include/collision_h.js
 var B2_MAX_POLYGON_VERTICES = 8;
@@ -2575,10 +2578,10 @@ function b2MakeRoundedBox(hx, hy, radius) {
   shape.radius = radius;
   return shape;
 }
-function b2MakeOffsetBox(hx, hy, center, angle = 0) {
+function b2MakeOffsetBox(hx, hy, center, rotation) {
   const xf2 = new b2Transform();
   xf2.p = center;
-  xf2.q = b2MakeRot(angle);
+  xf2.q = rotation;
   const shape = new b2Polygon();
   shape.count = 4;
   shape.vertices[0] = b2TransformPoint(xf2, new b2Vec2(-hx, -hy));
@@ -3088,7 +3091,7 @@ function b2CreateShapeInternal(world, body, transform, def, geometry, shapeType)
   shape.revision += 1;
   if (body.setIndex != b2SetType.b2_disabledSet) {
     const proxyType = body.type;
-    b2CreateShapeProxy(shape, world.broadPhase, proxyType, transform, def.forceContactCreation);
+    b2CreateShapeProxy(shape, world.broadPhase, proxyType, transform, def.forceContactCreation || def.isSensor);
   }
   if (body.headShapeId != B2_NULL_INDEX) {
     const headShape = world.shapeArray[body.headShapeId];
@@ -6884,12 +6887,12 @@ function b2DistanceJoint_SetSpringDampingRatio(jointId, dampingRatio) {
   const base = b2GetJointSimCheckType(jointId, b2JointType.b2_distanceJoint);
   base.distanceJoint.dampingRatio = dampingRatio;
 }
-function b2DistanceJoint_GetHertz(jointId) {
+function b2DistanceJoint_GetSpringHertz(jointId) {
   const base = b2GetJointSimCheckType(jointId, b2JointType.b2_distanceJoint);
   const joint = base.distanceJoint;
   return joint.hertz;
 }
-function b2DistanceJoint_GetDampingRatio(jointId) {
+function b2DistanceJoint_GetSpringDampingRatio(jointId) {
   const base = b2GetJointSimCheckType(jointId, b2JointType.b2_distanceJoint);
   const joint = base.distanceJoint;
   return joint.dampingRatio;
@@ -8789,7 +8792,8 @@ function b2CreateJoint(world, bodyA, bodyB, userData, drawSize, type, collideCon
     }
   }
   if (joint.setIndex > b2SetType.b2_disabledSet) {
-    b2LinkJoint(world, joint);
+    const mergeIslands = true;
+    b2LinkJoint(world, joint, mergeIslands);
   }
   b2ValidateSolverSets(world);
   return new b2JointPair(joint, jointSim);
@@ -9067,7 +9071,9 @@ function b2DestroyJointInternal(world, joint, wakeBodies) {
     bodyB.headJointKey = edgeB.nextKey;
   }
   bodyB.jointCount -= 1;
-  b2UnlinkJoint(world, joint);
+  if (joint.islandId !== B2_NULL_INDEX) {
+    b2UnlinkJoint(world, joint);
+  }
   const setIndex = joint.setIndex;
   const localIndex = joint.localIndex;
   if (setIndex === b2SetType.b2_awakeSet) {
@@ -9969,7 +9975,7 @@ function b2AddJointToIsland(world, islandId, joint) {
   joint.islandId = islandId;
   b2ValidateIsland(world, islandId);
 }
-function b2LinkJoint(world, joint) {
+function b2LinkJoint(world, joint, mergeIslands) {
   const bodyA = b2GetBody(world, joint.edges[0].bodyId);
   const bodyB = b2GetBody(world, joint.edges[1].bodyId);
   if (bodyA.setIndex === b2SetType.b2_awakeSet && bodyB.setIndex >= b2SetType.b2_firstSleepingSet) {
@@ -10014,6 +10020,9 @@ function b2LinkJoint(world, joint) {
     b2AddJointToIsland(world, islandIdA, joint);
   } else {
     b2AddJointToIsland(world, islandIdB, joint);
+  }
+  if (mergeIslands) {
+    b2MergeAwakeIslands(world);
   }
 }
 function b2UnlinkJoint(world, joint) {
@@ -11006,11 +11015,11 @@ function b2Body_SetType(bodyId, type) {
       if (body.type === b2BodyType.b2_staticBody && otherBody.type === b2BodyType.b2_staticBody) {
         continue;
       }
-      b2LinkJoint(world, joint);
+      b2LinkJoint(world, joint, false);
     }
+    b2MergeAwakeIslands(world);
   }
   b2UpdateBodyMassData(world, body);
-  b2ValidateConnectivity(world);
   b2ValidateSolverSets(world);
 }
 function b2Body_SetUserData(bodyId, userData) {
@@ -11029,7 +11038,7 @@ function b2Body_GetMass(bodyId) {
   const bodySim = b2GetBodySim(world, body);
   return bodySim.mass;
 }
-function b2Body_GetInertiaTensor(bodyId) {
+function b2Body_GetRotationalInertia(bodyId) {
   const world = b2GetWorld(bodyId.world0);
   const body = b2GetBodyFullId(world, bodyId);
   const bodySim = b2GetBodySim(world, body);
@@ -11158,10 +11167,10 @@ function b2Body_IsSleepEnabled(bodyId) {
   const body = b2GetBodyFullId(world, bodyId);
   return body.enableSleep;
 }
-function b2Body_SetSleepThreshold(bodyId, sleepVelocity) {
+function b2Body_SetSleepThreshold(bodyId, sleepThreshold) {
   const world = b2GetWorld(bodyId.world0);
   const body = b2GetBodyFullId(world, bodyId);
-  body.sleepThreshold = sleepVelocity;
+  body.sleepThreshold = sleepThreshold;
 }
 function b2Body_GetSleepThreshold(bodyId) {
   const world = b2GetWorld(bodyId.world0);
@@ -11243,6 +11252,7 @@ function b2Body_Enable(bodyId) {
   if (setId !== b2SetType.b2_staticSet) {
     b2CreateIslandForBody(world, setId, body);
   }
+  const mergeIslands = false;
   let jointKey = body.headJointKey;
   while (jointKey !== B2_NULL_INDEX) {
     const jointId = jointKey >> 1;
@@ -11265,10 +11275,10 @@ function b2Body_Enable(bodyId) {
     const jointSet = world.solverSetArray[jointSetId];
     b2TransferJoint(world, jointSet, disabledSet, joint);
     if (jointSetId !== b2SetType.b2_staticSet) {
-      b2LinkJoint(world, joint);
+      b2LinkJoint(world, joint, mergeIslands);
     }
   }
-  b2ValidateConnectivity(world);
+  b2MergeAwakeIslands(world);
   b2ValidateSolverSets(world);
 }
 function b2Body_SetFixedRotation(bodyId, flag) {
@@ -11709,7 +11719,8 @@ var p2 = new b2Vec2();
 var q1 = new b2Vec2();
 var q2 = new b2Vec2();
 function b2MakeCapsule(p14, p23, radius) {
-  const axis = b2NormalizeChecked(b2Sub(p23, p14));
+  const d = b2Sub(p23, p14);
+  const axis = b2Normalize(d);
   const normal = b2RightPerp(axis);
   const shape = new b2Polygon();
   shape.vertices = [p14, p23];
@@ -13733,6 +13744,7 @@ function b2CreateWorld(def) {
   return new b2WorldId(worldId + 1, world.revision);
 }
 function b2DestroyWorld(worldId) {
+  worldStepState.delete(worldId.index1);
   let world = b2GetWorldFromId(worldId);
   b2DestroyBitSet(world.debugBodySet);
   b2DestroyBitSet(world.debugJointSet);
@@ -15369,13 +15381,13 @@ function SpriteToBox(worldId, sprite, data) {
   );
   return body;
 }
-function SpriteToCircle(worldId, sprite, data) {
-  const scaleX = sprite?.scaleX || sprite?.scale?.x || 1;
-  const scaleY = sprite?.scaleY || sprite?.scale?.y || 1;
+function SpriteToCircle(worldId, sprite, data = {}) {
+  const scaleX = sprite?.scaleX ?? sprite?.scale?.x ?? 1;
+  const scaleY = sprite?.scaleY ?? sprite?.scale?.y ?? 1;
   const props = {
     worldId,
     type: DYNAMIC,
-    size: pxmVec2(sprite.width * scaleX / 2, sprite.height * scaleY / 2)
+    radius: pxm(Math.min(Math.abs(sprite.width * scaleX), Math.abs(sprite.height * scaleY)) / 2)
   };
   const body = CreateCircle({ ...props, ...data });
   b2Body_SetTransform(
@@ -15394,30 +15406,27 @@ function CreateWorld(data) {
   const worldId = b2CreateWorld(worldDef);
   return { worldId };
 }
-var _accumulator = 0;
 function WorldStep(data) {
-  let fixedTimeStep = data.fixedTimeStep;
-  if (!fixedTimeStep) {
-    fixedTimeStep = 1 / 60;
+  const fixedTimeStep = data.fixedTimeStep ?? 1 / 60;
+  const subStepCount = data.subStepCount ?? 4;
+  if (!Number.isFinite(fixedTimeStep) || fixedTimeStep <= 0 || !Number.isInteger(subStepCount) || subStepCount < 1 || !Number.isFinite(data.deltaTime) || data.deltaTime < 0) {
+    throw new RangeError("WorldStep requires positive step settings and a nonnegative delta in seconds");
   }
-  let subStepCount = data.subStepCount;
-  if (!subStepCount) {
-    subStepCount = 4;
+  let state = worldStepState.get(data.worldId.index1);
+  if (!state || state.revision !== data.worldId.revision) {
+    state = { revision: data.worldId.revision, accumulator: 0 };
+    worldStepState.set(data.worldId.index1, state);
   }
-  const borrowedTime = fixedTimeStep * 2;
-  _accumulator = Math.min(_accumulator + data.deltaTime, fixedTimeStep + borrowedTime);
-  const catchUpMax = 2;
-  let c2 = catchUpMax;
-  if (data.deltaTime > fixedTimeStep) {
-    c2 = 0;
-  }
+  const catchUpMax = 4;
+  state.accumulator = Math.min(state.accumulator + data.deltaTime, fixedTimeStep * catchUpMax);
   let totalTime = 0;
-  while (_accumulator >= fixedTimeStep && c2-- >= 0 && totalTime < fixedTimeStep) {
+  let steps = 0;
+  while (state.accumulator + 1e-12 >= fixedTimeStep && steps < catchUpMax && totalTime < fixedTimeStep) {
     const start = performance.now();
     b2World_Step(data.worldId, fixedTimeStep, subStepCount);
-    const end = performance.now();
-    totalTime = (end - start) / 1e3;
-    _accumulator -= fixedTimeStep;
+    totalTime += (performance.now() - start) / 1e3;
+    state.accumulator = Math.max(0, state.accumulator - fixedTimeStep);
+    steps++;
   }
   return totalTime;
 }
@@ -15428,11 +15437,14 @@ function CreateChain(data) {
   const friction = data.friction !== void 0 ? data.friction : 0.5;
   const color = data.color !== void 0 ? data.color : b2HexColor.b2_colorGold;
   const radius = data.radius !== void 0 ? data.radius : 0.5;
+  if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(data.linkLength) || data.linkLength < radius * 2 || !Number.isInteger(data.chainLinks) || data.chainLinks < 1) {
+    throw new RangeError("Chain links require a positive radius, at least one link, and length >= diameter");
+  }
   var lastLink = null;
   var position = b2Add(data.firstLinkPosition, new b2Vec2(data.linkLength, 0));
   const listLinks = [];
   for (let i = 0; i < data.chainLinks; i++) {
-    const link = CreateCapsule({ worldId: data.worldId, type, position, center1: new b2Vec2(-data.linkLength / 2 + data.radius, 0), center2: new b2Vec2(data.linkLength / 2 - data.radius, 0), radius, density, friction, groupIndex: -1, color });
+    const link = CreateCapsule({ worldId: data.worldId, type, position, center1: new b2Vec2(-data.linkLength / 2 + radius, 0), center2: new b2Vec2(data.linkLength / 2 - radius, 0), radius, density, friction, groupIndex: -1, color });
     listLinks.push(link);
     if (i == 0) {
       if (data.fixEnds) {
@@ -15570,7 +15582,7 @@ function CreateBoxPolygon(data) {
   let box;
   if (data.size instanceof b2Vec2) {
     if (data.bodyId) {
-      box = b2MakeOffsetBox(data.size.x, data.size.y, data.position, 0);
+      box = b2MakeOffsetBox(data.size.x, data.size.y, data.position, b2MakeRot(0));
     } else {
       box = b2MakeBox(data.size.x, data.size.y);
     }
@@ -16813,7 +16825,6 @@ export {
   b2Body_GetContactCapacity,
   b2Body_GetContactData,
   b2Body_GetGravityScale,
-  b2Body_GetInertiaTensor,
   b2Body_GetJointCount,
   b2Body_GetJoints,
   b2Body_GetLinearDamping,
@@ -16825,6 +16836,7 @@ export {
   b2Body_GetMassData,
   b2Body_GetPosition,
   b2Body_GetRotation,
+  b2Body_GetRotationalInertia,
   b2Body_GetShapeCount,
   b2Body_GetShapes,
   b2Body_GetSleepThreshold,
@@ -16934,14 +16946,14 @@ export {
   b2DistanceJoint_EnableMotor,
   b2DistanceJoint_EnableSpring,
   b2DistanceJoint_GetCurrentLength,
-  b2DistanceJoint_GetDampingRatio,
-  b2DistanceJoint_GetHertz,
   b2DistanceJoint_GetLength,
   b2DistanceJoint_GetMaxLength,
   b2DistanceJoint_GetMaxMotorForce,
   b2DistanceJoint_GetMinLength,
   b2DistanceJoint_GetMotorForce,
   b2DistanceJoint_GetMotorSpeed,
+  b2DistanceJoint_GetSpringDampingRatio,
+  b2DistanceJoint_GetSpringHertz,
   b2DistanceJoint_IsLimitEnabled,
   b2DistanceJoint_IsMotorEnabled,
   b2DistanceJoint_IsSpringEnabled,

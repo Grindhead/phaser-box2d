@@ -29,6 +29,7 @@ import { b2CreateWorld, b2CreateWorldArray, b2World_Step } from './include/world
 import { b2MakeBox, b2MakeOffsetBox, b2MakeOffsetPolygon, b2MakePolygon } from './include/geometry_h.js';
 
 import { DYNAMIC } from './main.js';
+import { worldStepState } from './world-step-state.js';
 import { b2ComputeHull } from './include/hull_h.js';
 
 /**
@@ -290,15 +291,16 @@ export function SpriteToBox (worldId, sprite, data)
  * @returns {{bodyId: b2BodyId, shapeId: b2ShapeId, object: b2Circle}} The created box's body ID, shape ID, and object.
  * @memberof Physics
  */
-export function SpriteToCircle (worldId, sprite, data)
+export function SpriteToCircle (worldId, sprite, data = {})
 {
-    const scaleX = sprite?.scaleX || sprite?.scale?.x || 1;
-    const scaleY = sprite?.scaleY || sprite?.scale?.y || 1;
+    const scaleX = sprite?.scaleX ?? sprite?.scale?.x ?? 1;
+    const scaleY = sprite?.scaleY ?? sprite?.scale?.y ?? 1;
 
+    // Inscribe the circle within the scaled sprite, converting pixels to meters.
     const props = {
         worldId,
         type: DYNAMIC,
-        size: pxmVec2((sprite.width * scaleX) / 2, (sprite.height * scaleY) / 2)
+        radius: pxm(Math.min(Math.abs(sprite.width * scaleX), Math.abs(sprite.height * scaleY)) / 2)
     };
 
     const body = CreateCircle({ ...props, ...data });
@@ -342,54 +344,46 @@ export function CreateWorld (data)
 /**
  * @typedef {Object} WorldStepConfig
  * @property {b2WorldId} worldId - The world ID value
- * @property {number} deltaTime - How long has it been since the last call (e.g. the value passed to a RAF update)
+ * @property {number} deltaTime - Elapsed seconds since the last call; convert millisecond deltas with delta / 1000
  * @property {number} [fixedTimeStep = 1/60] - Duration of the fixed timestep for the Physics simulation
  * @property {number} [subStepCount = 4] - Number of sub-steps performed per world step
  */
 
-let _accumulator = 0;
 
 /**
  * Steps a physics world to match fixedTimeStep.
  * Returns the average time spent in the step function.
  * 
- * @param {WorldConfig} data - Configuration for the world.
+ * @param {WorldStepConfig} data - Configuration for the world.
  * @returns {number} totalTime - Time spent processing the step function, in seconds.
  */
 export function WorldStep (data)
 {
-    let fixedTimeStep = data.fixedTimeStep;
-
-    if (!fixedTimeStep)
-    { fixedTimeStep = 1 / 60; }
-    let subStepCount = data.subStepCount;
-
-    if (!subStepCount)
-    { subStepCount = 4; }
-
-    const borrowedTime = fixedTimeStep * 2.0;
-    _accumulator = Math.min(_accumulator + data.deltaTime, fixedTimeStep + borrowedTime);
-
-    // try to catch-up if we've skipped some frames
-    const catchUpMax = 2;
-    let c = catchUpMax;
-
-    // if we've been running below the fixedTimeStep, don't attempt to catch-up
-    if (data.deltaTime > fixedTimeStep)
+    const fixedTimeStep = data.fixedTimeStep ?? 1 / 60;
+    const subStepCount = data.subStepCount ?? 4;
+    if (!Number.isFinite(fixedTimeStep) || fixedTimeStep <= 0 || !Number.isInteger(subStepCount) || subStepCount < 1 || !Number.isFinite(data.deltaTime) || data.deltaTime < 0)
     {
-        c = 0;
+        throw new RangeError('WorldStep requires positive step settings and a nonnegative delta in seconds');
     }
 
-    let totalTime = 0;
+    let state = worldStepState.get(data.worldId.index1);
+    if (!state || state.revision !== data.worldId.revision)
+    {
+        state = { revision: data.worldId.revision, accumulator: 0 };
+        worldStepState.set(data.worldId.index1, state);
+    }
 
-    // while we owe time, have some catch-up count remaining, and haven't used the entire fixedTimeStep yet...
-    while (_accumulator >= fixedTimeStep && c-- >= 0 && totalTime < fixedTimeStep)
+    const catchUpMax = 4;
+    state.accumulator = Math.min(state.accumulator + data.deltaTime, fixedTimeStep * catchUpMax);
+    let totalTime = 0;
+    let steps = 0;
+    while (state.accumulator + 1e-12 >= fixedTimeStep && steps < catchUpMax && totalTime < fixedTimeStep)
     {
         const start = performance.now();
         b2World_Step(data.worldId, fixedTimeStep, subStepCount);
-        const end = performance.now();
-        totalTime = (end - start) / 1000;
-        _accumulator -= fixedTimeStep;
+        totalTime += (performance.now() - start) / 1000;
+        state.accumulator = Math.max(0, state.accumulator - fixedTimeStep);
+        steps++;
     }
 
     return totalTime;
@@ -433,6 +427,11 @@ export function CreateChain (data)
     const color = data.color !== undefined ? data.color : b2HexColor.b2_colorGold;
     const radius = data.radius !== undefined ? data.radius : 0.5;
 
+    if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(data.linkLength) || data.linkLength < radius * 2 || !Number.isInteger(data.chainLinks) || data.chainLinks < 1)
+    {
+        throw new RangeError('Chain links require a positive radius, at least one link, and length >= diameter');
+    }
+
     var lastLink = null;
     var position = b2Add(data.firstLinkPosition, new b2Vec2(data.linkLength, 0));
 
@@ -441,7 +440,7 @@ export function CreateChain (data)
     for (let i = 0; i < data.chainLinks; i++)
     {
         // const link = CreateBoxPolygon({ worldId:world.worldId, type:b2BodyType.b2_dynamicBody, position:position, size:new b2Vec2(linkLength / 2,0.5), density:1.0, friction:0.2, groupIndex:-1, color:b2HexColor.b2_colorGold });
-        const link = CreateCapsule({ worldId: data.worldId, type: type, position: position, center1: new b2Vec2(-data.linkLength / 2 + data.radius, 0), center2: new b2Vec2(data.linkLength / 2 - data.radius, 0), radius: radius, density: density, friction: friction, groupIndex: -1, color: color });
+        const link = CreateCapsule({ worldId: data.worldId, type: type, position: position, center1: new b2Vec2(-data.linkLength / 2 + radius, 0), center2: new b2Vec2(data.linkLength / 2 - radius, 0), radius: radius, density: density, friction: friction, groupIndex: -1, color: color });
         listLinks.push(link);
 
         if (i == 0) // connect first link to solid
