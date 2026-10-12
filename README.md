@@ -54,7 +54,7 @@ https://www.npmjs.com/package/phaser-box2d
 
 ## How to use the Vite Template
 
-1. Copy the `PhaserBox2D.js`, `PhaserBox2D-Debug.js` and `PhaserBox2D-Debug.js.map` files into the `vite-template/src` folder.
+1. Copy the `PhaserBox2D.js`, `PhaserBox2D-Debug.js` and `PhaserBox2D-Debug.js.map` files from the `dist` folder into the `vite-template/src` folder (a copy of `PhaserBox2D.js` is already included, so the template runs out of the box; copy the files again after rebuilding the library).
 2. If you haven't already, run `npm install` from within the `vite-template` folder. This will install both Vite and Phaser.
 3. Use the following npm commands:
     - `npm run dev` - to run Vite in dev/watcher mode and open your browser to the URL given.
@@ -62,6 +62,7 @@ https://www.npmjs.com/package/phaser-box2d
     - `npm run preview` - to test the `dist` build. Open your browser to the URL given.
 4. Open the `src/main.js` file to see Phaser and Box2D being used together in a simple example.
 5. By default, the code uses the Release version of Box2D. If you would like to use the Debug version so you can use the Debug Draw renderer then simply edit the `import` statement in the `main.js` file to import `PhaserBox2D-Debug.js` instead of `PhaserBox2D.js`. Just remember to swap this back before doing a production build.
+6. `WorldStep` expects `deltaTime` in **seconds**. Phaser's `Scene.update(time, delta)` gives `delta` in milliseconds, so the template passes `delta / 1000`.
 
 ## License
 
@@ -213,6 +214,8 @@ There is some common code we use to make sure that the fixed time step and the r
 
 Notes: The fixedTimeStep defaults to 60fps (1/60), and subStepCount defaults to 4 if they are not specified. These are good values for most uses.
 
+`deltaTime` is the real time elapsed since the previous call, in **seconds** (divide a Phaser `update` delta by 1000). Each world keeps its own accumulator, so several worlds can be stepped side by side. When frames are slower than the fixed step, WorldStep runs several fixed steps in one call to catch up, up to `maxCatchUpSteps` (default 4); time beyond that budget (for example after a long stall) is dropped rather than replayed.
+
 ```js
 // step the physics simulation to advance it; Here we're using a fixed step of 30fps with two sub-steps per full step
 const stepTime = WorldStep({ worldId: worldId, deltaTime: deltaTime, fixedTimeStep: 1/30, subStepCount: 2 });
@@ -253,7 +256,7 @@ export function CreateWorld(data)
 /**
  * @typedef {Object} WorldStepConfig
  * @property {b2WorldId} worldId - The world ID value
- * @property {number} deltaTime - How long has it been since the last call (e.g. the value passed to a RAF update)
+ * @property {number} deltaTime - How long has it been since the last call, in seconds (e.g. the value passed to a RAF update, or a Phaser update delta / 1000)
  * @property {number} [fixedTimeStep = 1/60] - Duration of the fixed timestep for the Physics simulation
  * @property {number} [subStepCount = 4] - Number of sub-steps performed per world step
  */
