@@ -281,13 +281,19 @@ export function SpriteToBox (worldId, sprite, data)
 }
 
 /**
- * Creates a circle-shaped polygon and attaches it to a body based on the dimensions, position
+ * Creates a circle shape and attaches it to a body based on the dimensions, position
  * and rotation of the given Sprite.
+ *
+ * Unless `data.radius` is given, the radius (in meters) is derived from the Sprite as half of
+ * its larger scaled dimension, converted with the current world scale:
+ * `pxm(max(|width * scaleX|, |height * scaleY|) / 2)`.
+ * For a square sprite this is the inscribed circle. For a non-square sprite the circle spans the
+ * sprite's longer side, so it extends beyond the shorter side. Pass `data.radius` to override it.
  * 
  * @param {number} worldId - The World ID.
  * @param {Sprite} sprite - The Sprite object to read the data from.
- * @param {CircleConfig} data - Additional configuration for the circle.
- * @returns {{bodyId: b2BodyId, shapeId: b2ShapeId, object: b2Circle}} The created box's body ID, shape ID, and object.
+ * @param {CircleConfig} [data] - Additional configuration for the circle. `data.radius` (meters) overrides the derived radius.
+ * @returns {{bodyId: b2BodyId, shapeId: b2ShapeId, object: b2Circle}} The created circle's body ID, shape ID, and object.
  * @memberof Physics
  */
 export function SpriteToCircle (worldId, sprite, data)
@@ -295,13 +301,16 @@ export function SpriteToCircle (worldId, sprite, data)
     const scaleX = sprite?.scaleX || sprite?.scale?.x || 1;
     const scaleY = sprite?.scaleY || sprite?.scale?.y || 1;
 
+    const radius = (data && data.radius !== undefined)
+        ? data.radius
+        : pxm(Math.max(Math.abs(sprite.width * scaleX), Math.abs(sprite.height * scaleY)) / 2);
+
     const props = {
         worldId,
-        type: DYNAMIC,
-        size: pxmVec2((sprite.width * scaleX) / 2, (sprite.height * scaleY) / 2)
+        type: DYNAMIC
     };
 
-    const body = CreateCircle({ ...props, ...data });
+    const body = CreateCircle({ ...props, ...data, radius });
 
     b2Body_SetTransform(
         body.bodyId,
@@ -342,19 +351,45 @@ export function CreateWorld (data)
 /**
  * @typedef {Object} WorldStepConfig
  * @property {b2WorldId} worldId - The world ID value
- * @property {number} deltaTime - How long has it been since the last call (e.g. the value passed to a RAF update)
- * @property {number} [fixedTimeStep = 1/60] - Duration of the fixed timestep for the Physics simulation
+ * @property {number} deltaTime - How long has it been since the last call, in SECONDS (e.g. a Phaser Scene `update` delta divided by 1000)
+ * @property {number} [fixedTimeStep = 1/60] - Duration of the fixed timestep for the Physics simulation, in seconds
  * @property {number} [subStepCount = 4] - Number of sub-steps performed per world step
+ * @property {number} [maxCatchUpSteps = 4] - Maximum number of fixed steps performed in a single call. Elapsed time beyond this budget is discarded.
  */
 
-let _accumulator = 0;
+/**
+ * Per-world fixed-step timing state, keyed by the world slot (worldId.index1).
+ * The stored revision lets a destroyed and re-created world in the same slot start with no leftover time.
+ * @type {Map<number, {revision: number, accumulator: number}>}
+ */
+const _worldTiming = new Map();
+
+/**
+ * Discards the fixed-step accumulator for a world. WorldStep also resets it automatically when it
+ * sees a world that was destroyed and re-created in the same slot.
+ *
+ * @param {b2WorldId} worldId - The world whose timing state should be cleared.
+ * @memberof Physics
+ */
+export function ResetWorldStep (worldId)
+{
+    _worldTiming.delete(worldId.index1);
+}
 
 /**
  * Steps a physics world to match fixedTimeStep.
+ *
+ * `deltaTime` (seconds) is added to an accumulator kept separately for each world, and one fixed step
+ * is performed for every whole `fixedTimeStep` owed. Slow frames are caught up with several steps in
+ * one call, up to `maxCatchUpSteps` (default 4, i.e. 1/15 s of simulation at the default 1/60 step).
+ * Any time beyond that budget, e.g. after a very long frame or a paused tab, is discarded so that a
+ * slow frame cannot cause an ever-growing amount of work.
+ *
  * Returns the average time spent in the step function.
  * 
- * @param {WorldConfig} data - Configuration for the world.
- * @returns {number} totalTime - Time spent processing the step function, in seconds.
+ * @param {WorldStepConfig} data - Configuration for the step.
+ * @returns {number} totalTime - Average time spent processing one step, in seconds (0 if no step ran).
+ * @memberof Physics
  */
 export function WorldStep (data)
 {
@@ -366,33 +401,42 @@ export function WorldStep (data)
 
     if (!subStepCount)
     { subStepCount = 4; }
+    let maxCatchUpSteps = data.maxCatchUpSteps;
 
-    const borrowedTime = fixedTimeStep * 2.0;
-    _accumulator = Math.min(_accumulator + data.deltaTime, fixedTimeStep + borrowedTime);
+    if (!(maxCatchUpSteps >= 1))
+    { maxCatchUpSteps = 4; }
 
-    // try to catch-up if we've skipped some frames
-    const catchUpMax = 2;
-    let c = catchUpMax;
+    const worldId = data.worldId;
+    let timing = _worldTiming.get(worldId.index1);
 
-    // if we've been running below the fixedTimeStep, don't attempt to catch-up
-    if (data.deltaTime > fixedTimeStep)
+    if (!timing || timing.revision !== worldId.revision)
     {
-        c = 0;
+        timing = { revision: worldId.revision, accumulator: 0 };
+        _worldTiming.set(worldId.index1, timing);
     }
 
+    const deltaTime = (Number.isFinite(data.deltaTime) && data.deltaTime > 0) ? data.deltaTime : 0;
+
+    // bound the work done in one call: never owe more than maxCatchUpSteps fixed steps
+    timing.accumulator = Math.min(timing.accumulator + deltaTime, fixedTimeStep * maxCatchUpSteps);
+
+    // tolerate floating point drift so that e.g. 2 x (1/120) counts as one 1/60 step
+    const epsilon = fixedTimeStep * 1e-6;
+
+    let steps = 0;
     let totalTime = 0;
 
-    // while we owe time, have some catch-up count remaining, and haven't used the entire fixedTimeStep yet...
-    while (_accumulator >= fixedTimeStep && c-- >= 0 && totalTime < fixedTimeStep)
+    while (timing.accumulator + epsilon >= fixedTimeStep && steps < maxCatchUpSteps)
     {
         const start = performance.now();
-        b2World_Step(data.worldId, fixedTimeStep, subStepCount);
+        b2World_Step(worldId, fixedTimeStep, subStepCount);
         const end = performance.now();
-        totalTime = (end - start) / 1000;
-        _accumulator -= fixedTimeStep;
+        totalTime += (end - start) / 1000;
+        timing.accumulator = Math.max(0, timing.accumulator - fixedTimeStep);
+        steps++;
     }
 
-    return totalTime;
+    return steps > 0 ? totalTime / steps : 0;
 }
 
 /**
@@ -402,12 +446,12 @@ export function WorldStep (data)
  * @property {number} [type] - Type of the body (static, dynamic, kinematic).
  * @property {b2Vec2} firstLinkPosition - Position of the first link.
  * @property {b2Vec2} lastLinkPosition - Position of the last link.
- * @property {number} chainLinks - Number of links in the chain.
- * @property {number} linkLength - Length of each link
+ * @property {number} chainLinks - Number of links in the chain. Must be an integer >= 1.
+ * @property {number} linkLength - Length of each link. Must be >= 2 * radius (the capsule diameter).
  * @property {number} [density] - Density of the links.
  * @property {number} [friction] - Friction of the links.
  * @property {any} [color] - Custom color for the links.
- * @property {number} [radius] - Radius for the circle 'caps' on each capsule link.
+ * @property {number} [radius=0.5] - Radius for the circle 'caps' on each capsule link. Must be > 0.
  * @property {boolean} fixEnds - Should the ends of the chain be fixed to the groundId object?
  */
 
@@ -422,16 +466,33 @@ export function WorldStep (data)
  * Creates a chain of capsules with each one linked to the previous and next one.
  * @param {ChainConfig} data - Configuration for the chain.
  * @returns {BodyCapsule[]} A list of each link's body ID, shape ID, and object.
+ * @throws {RangeError} If chainLinks, radius or linkLength describe an impossible chain.
  * @memberof Physics
  */
 export function CreateChain (data)
 {
+    const radius = data.radius !== undefined ? data.radius : 0.5;
+
+    if (!Number.isInteger(data.chainLinks) || data.chainLinks < 1)
+    {
+        throw new RangeError(`CreateChain: chainLinks must be an integer >= 1 (got ${data.chainLinks})`);
+    }
+
+    if (!Number.isFinite(radius) || radius <= 0)
+    {
+        throw new RangeError(`CreateChain: radius must be a finite number > 0 (got ${radius})`);
+    }
+
+    if (!Number.isFinite(data.linkLength) || data.linkLength < 2 * radius)
+    {
+        throw new RangeError(`CreateChain: linkLength (${data.linkLength}) must be a finite number >= the capsule diameter 2 * radius (${2 * radius})`);
+    }
+
     const chainSpacing = b2Distance(data.firstLinkPosition, data.lastLinkPosition) / data.chainLinks;
     const type = data.type !== undefined ? data.type : b2BodyType.b2_dynamicBody;
     const density = data.density !== undefined ? data.density : 1.0;
     const friction = data.friction !== undefined ? data.friction : 0.5;
     const color = data.color !== undefined ? data.color : b2HexColor.b2_colorGold;
-    const radius = data.radius !== undefined ? data.radius : 0.5;
 
     var lastLink = null;
     var position = b2Add(data.firstLinkPosition, new b2Vec2(data.linkLength, 0));
@@ -441,7 +502,7 @@ export function CreateChain (data)
     for (let i = 0; i < data.chainLinks; i++)
     {
         // const link = CreateBoxPolygon({ worldId:world.worldId, type:b2BodyType.b2_dynamicBody, position:position, size:new b2Vec2(linkLength / 2,0.5), density:1.0, friction:0.2, groupIndex:-1, color:b2HexColor.b2_colorGold });
-        const link = CreateCapsule({ worldId: data.worldId, type: type, position: position, center1: new b2Vec2(-data.linkLength / 2 + data.radius, 0), center2: new b2Vec2(data.linkLength / 2 - data.radius, 0), radius: radius, density: density, friction: friction, groupIndex: -1, color: color });
+        const link = CreateCapsule({ worldId: data.worldId, type: type, position: position, center1: new b2Vec2(-data.linkLength / 2 + radius, 0), center2: new b2Vec2(data.linkLength / 2 - radius, 0), radius: radius, density: density, friction: friction, groupIndex: -1, color: color });
         listLinks.push(link);
 
         if (i == 0) // connect first link to solid

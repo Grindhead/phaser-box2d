@@ -9,6 +9,10 @@
 * update box2d version returned by `b2GetVersion`: `3.0.0` -> `3.1.0`
 * Sensor shapes now always generate events when created.
 * Thanks to @mikuso for creating the first pass at TypeScript definitions.
+* `SpriteToCircle` now derives a radius (half the larger scaled sprite side, in meters) instead of passing an unused `size`; an explicit `radius` still overrides it.
+* `WorldStep` keeps a separate fixed-step accumulator per world (reset when a world slot is re-created; `ResetWorldStep(worldId)` clears it manually), catches up slow frames with up to `maxCatchUpSteps` (default 4) fixed steps per call, and returns the average time per step. `deltaTime` is documented as seconds.
+* `CreateChain` uses its resolved default radius (0.5) for capsule endpoints and throws a `RangeError` for impossible chain dimensions.
+* Vite template: imports `PhaserBox2D.js` (the file the build emits and the README tells you to copy) and passes Phaser's millisecond `delta` to `WorldStep` as seconds.
 
 
 ## Version 1.1.0 - December 30th 2024

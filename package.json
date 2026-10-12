@@ -24,6 +24,7 @@
     "docs": "node docs.mjs",
     "dev": "node overwatch/index.mjs",
     "build": "node overwatch/ProdBuild.mjs",
+    "test": "node --test tests/*.test.js",
     "lint": "eslint --config eslint.config.js",
     "lintfix": "eslint --fix --config eslint.config.js",
     "builddocs": "documentation build --config documentation.yml src/** -f html -o docs --theme docs-theme/index.js",

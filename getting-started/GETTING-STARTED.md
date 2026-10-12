@@ -216,7 +216,7 @@ function update (deltaTime)
 
 There's only two parts to this. `WorldStep`, as the name implies, will 'step' the given Box2D world simulation forward by 'deltaTime' amount. As you can see, you pass in the World ID, not the world itself. Box2D is perfectly capable of running multiple worlds at once. Each will need stepping, although they can step at different rates as required.
 
-The Debug Draw renderer has a built-in `RAF` function that calculates the delta time and calls the `update` function for you. You don't have to use it, though. All you need to know is that the `deltaTime` value is the amount you want to step the world by. This should be a fixed number and is typically 1/60. See the [b2World_Step](https://box2d.org/documentation/group__world.html#ga0249cf75273319ca548d55734d7297c4) function for details if you wish to implement your own.
+The Debug Draw renderer has a built-in `RAF` function that calculates the delta time and calls the `update` function for you. You don't have to use it, though. All you need to know is that the `deltaTime` value is the real time, in seconds, that has elapsed since the last call. `WorldStep` accumulates it and advances the world in fixed steps of `fixedTimeStep` (default 1/60), catching up with a few extra steps after a slow frame. See the [b2World_Step](https://box2d.org/documentation/group__world.html#ga0249cf75273319ca548d55734d7297c4) function for details if you wish to implement your own.
 
 The final call here is to `b2World_Draw`. The C version of Box2D actually has its own built-in Debug renderer. Obviously, we couldn't use that for the web, so we wrote our own in JavaScript that used the same function signatures, hence how we're able to pass it through in here. In the above code, `m_draw` is:
 
@@ -345,7 +345,8 @@ update (time, delta)
 {
     const worldId = this.world.worldId;
 
-    WorldStep({ worldId, deltaTime: delta });
+    // Phaser's delta is in milliseconds; WorldStep expects seconds
+    WorldStep({ worldId, deltaTime: delta / 1000 });
 
     this.debug.clear();
 

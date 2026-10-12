@@ -1,6 +1,6 @@
 import * as Phaser from 'phaser';
 
-import { AddSpriteToWorld, CreateBoxPolygon, CreateWorld, STATIC, SetWorldScale, SpriteToBox, UpdateWorldSprites, WorldStep, b2DefaultBodyDef, b2DefaultWorldDef, b2Vec2, pxmVec2 } from './PhaserBox2D-Release.js';
+import { AddSpriteToWorld, CreateBoxPolygon, CreateWorld, STATIC, SetWorldScale, SpriteToBox, UpdateWorldSprites, WorldStep, b2DefaultBodyDef, b2DefaultWorldDef, b2Vec2, pxmVec2 } from './PhaserBox2D.js';
 
 class Example extends Phaser.Scene
 {
@@ -38,7 +38,8 @@ class Example extends Phaser.Scene
     {
         const worldId = this.world.worldId;
 
-        WorldStep({ worldId, deltaTime: delta });
+        // Phaser passes delta in milliseconds; WorldStep expects seconds
+        WorldStep({ worldId, deltaTime: delta / 1000 });
 
         UpdateWorldSprites(worldId);
     }

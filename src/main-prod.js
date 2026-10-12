@@ -510,7 +510,8 @@ export {
     CreateWeldJoint,
     CreateWheelJoint,
     CreateWorld,
-    WorldStep
+    WorldStep,
+    ResetWorldStep
 } from './physics.js';
 
 export {

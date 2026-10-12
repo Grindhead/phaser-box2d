@@ -125,16 +125,22 @@ export function SpriteToBox(worldId: number, sprite: Sprite, data: BoxPolygonCon
     object: b2Polygon;
 };
 /**
- * Creates a circle-shaped polygon and attaches it to a body based on the dimensions, position
+ * Creates a circle shape and attaches it to a body based on the dimensions, position
  * and rotation of the given Sprite.
+ *
+ * Unless `data.radius` is given, the radius (in meters) is derived from the Sprite as half of
+ * its larger scaled dimension, converted with the current world scale:
+ * `pxm(max(|width * scaleX|, |height * scaleY|) / 2)`.
+ * For a square sprite this is the inscribed circle. For a non-square sprite the circle spans the
+ * sprite's longer side, so it extends beyond the shorter side. Pass `data.radius` to override it.
  *
  * @param {number} worldId - The World ID.
  * @param {Sprite} sprite - The Sprite object to read the data from.
- * @param {CircleConfig} data - Additional configuration for the circle.
- * @returns {{bodyId: b2BodyId, shapeId: b2ShapeId, object: b2Circle}} The created box's body ID, shape ID, and object.
+ * @param {CircleConfig} [data] - Additional configuration for the circle. `data.radius` (meters) overrides the derived radius.
+ * @returns {{bodyId: b2BodyId, shapeId: b2ShapeId, object: b2Circle}} The created circle's body ID, shape ID, and object.
  * @memberof Physics
  */
-export function SpriteToCircle(worldId: number, sprite: Sprite, data: CircleConfig): {
+export function SpriteToCircle(worldId: number, sprite: Sprite, data?: CircleConfig): {
     bodyId: b2BodyId;
     shapeId: b2ShapeId;
     object: b2Circle;
@@ -153,13 +159,25 @@ export function CreateWorld(data: WorldConfig): {
     worldId: b2WorldId;
 };
 /**
- * Steps a physics world to match fixedTimeStep.
- * Returns the average time spent in the step function.
+ * Discards the fixed-step accumulator for a world. WorldStep also resets it automatically when it
+ * sees a world that was destroyed and re-created in the same slot.
  *
- * @param {WorldConfig} data - Configuration for the world.
- * @returns {number} totalTime - Time spent processing the step function, in seconds.
+ * @param {b2WorldId} worldId - The world whose timing state should be cleared.
+ * @memberof Physics
  */
-export function WorldStep(data: WorldConfig): number;
+export function ResetWorldStep(worldId: b2WorldId): void;
+/**
+ * Steps a physics world to match fixedTimeStep.
+ *
+ * `deltaTime` (seconds) is added to an accumulator kept separately for each world, and one fixed step
+ * is performed for every whole `fixedTimeStep` owed. Slow frames are caught up with several steps in
+ * one call, up to `maxCatchUpSteps` (default 4). Time beyond that budget is discarded.
+ *
+ * @param {WorldStepConfig} data - Configuration for the step.
+ * @returns {number} totalTime - Average time spent processing one step, in seconds (0 if no step ran).
+ * @memberof Physics
+ */
+export function WorldStep(data: WorldStepConfig): number;
 /**
  * @typedef {Object} ChainConfig
  * @property {b2WorldId} worldId - ID for the world.
@@ -167,12 +185,12 @@ export function WorldStep(data: WorldConfig): number;
  * @property {number} [type] - Type of the body (static, dynamic, kinematic).
  * @property {b2Vec2} firstLinkPosition - Position of the first link.
  * @property {b2Vec2} lastLinkPosition - Position of the last link.
- * @property {number} chainLinks - Number of links in the chain.
- * @property {number} linkLength - Length of each link
+ * @property {number} chainLinks - Number of links in the chain. Must be an integer >= 1.
+ * @property {number} linkLength - Length of each link. Must be >= 2 * radius (the capsule diameter).
  * @property {number} [density] - Density of the links.
  * @property {number} [friction] - Friction of the links.
  * @property {any} [color] - Custom color for the links.
- * @property {number} [radius] - Radius for the circle 'caps' on each capsule link.
+ * @property {number} [radius=0.5] - Radius for the circle 'caps' on each capsule link. Must be > 0.
  * @property {boolean} fixEnds - Should the ends of the chain be fixed to the groundId object?
  */
 /**
@@ -1460,17 +1478,21 @@ export type WorldStepConfig = {
      */
     worldId: b2WorldId;
     /**
-     * - How long has it been since the last call (e.g. the value passed to a RAF update)
+     * - How long has it been since the last call, in SECONDS (e.g. a Phaser Scene `update` delta divided by 1000)
      */
     deltaTime: number;
     /**
-     * - Duration of the fixed timestep for the Physics simulation
+     * - Duration of the fixed timestep for the Physics simulation, in seconds
      */
     fixedTimeStep?: number;
     /**
      * - Number of sub-steps performed per world step
      */
     subStepCount?: number;
+    /**
+     * - Maximum number of fixed steps performed in a single call. Elapsed time beyond this budget is discarded.
+     */
+    maxCatchUpSteps?: number;
 };
 import { b2Vec2 } from './include/math_functions_h.js';
 import { b2Rot } from './include/math_functions_h.js';
